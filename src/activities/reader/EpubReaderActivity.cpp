@@ -12,6 +12,7 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "DictPopupActivity.h"
 #include "EpubReaderChapterSelectionActivity.h"
 #include "ReaderOptionsActivity.h"
 #include "EpubReaderFootnotesActivity.h"
@@ -107,6 +108,42 @@ void EpubReaderActivity::loop() {
   if (!epub) {
     // Should never happen
     finish();
+    return;
+  }
+
+  // Dictionary mode handles its own inputs and short-circuits normal reader controls.
+  if (dictMode) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Power)) {
+      exitDictMode();
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      dictDoLookup();
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+      dictMoveHorizontal(-1);
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+      dictMoveHorizontal(+1);
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+      dictMoveVertical(-1);
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+      dictMoveVertical(+1);
+      return;
+    }
+    return;
+  }
+
+  // Enter dictionary mode on Power button press while reading.
+  if (mappedInput.wasReleased(MappedInputManager::Button::Power)) {
+    enterDictMode();
     return;
   }
 
@@ -801,6 +838,151 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
             tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tBwRestore - tBwStore,
             tEnd - t0);
   }
+
+  if (dictMode) {
+    captureDictWords(*page, orientedMarginLeft, orientedMarginTop, SETTINGS.getReaderFontId());
+    if (!dictWords.empty()) {
+      if (dictWordIndex < 0 || dictWordIndex >= static_cast<int>(dictWords.size())) {
+        dictWordIndex = 0;
+      }
+      dictDrawHighlight();
+    }
+  }
+}
+
+void EpubReaderActivity::captureDictWords(const Page& page, const int marginLeft, const int marginTop,
+                                          const int fontId) {
+  dictWords.clear();
+  const int lineHeight = renderer.getLineHeight(fontId);
+  for (const auto& el : page.elements) {
+    if (!el || el->getTag() != TAG_PageLine) continue;
+    const auto& line = static_cast<const PageLine&>(*el);
+    const auto& block = line.getBlock();
+    if (!block) continue;
+    const auto& words = block->getWords();
+    const auto& xpos = block->getWordXpos();
+    const auto& styles = block->getWordStyles();
+    if (words.size() != xpos.size() || words.size() != styles.size()) continue;
+    const int baseX = line.xPos + marginLeft;
+    const int baseY = line.yPos + marginTop;
+    for (size_t i = 0; i < words.size(); ++i) {
+      const std::string& text = words[i];
+      // Skip whitespace-only words.
+      bool printable = false;
+      for (char c : text) {
+        if (c != ' ' && c != '\t') { printable = true; break; }
+      }
+      if (!printable) continue;
+      DictWord dw;
+      dw.x = static_cast<int16_t>(baseX + xpos[i]);
+      dw.y = static_cast<int16_t>(baseY);
+      dw.w = static_cast<int16_t>(renderer.getTextWidth(fontId, text.c_str(), styles[i]));
+      dw.h = static_cast<int16_t>(lineHeight);
+      dw.lineY = static_cast<int16_t>(baseY);
+      dw.text = text;
+      dw.style = styles[i];
+      if (dw.w <= 0) continue;
+      dictWords.push_back(std::move(dw));
+    }
+  }
+}
+
+void EpubReaderActivity::dictDrawHighlight() {
+  if (dictWords.empty()) return;
+  if (dictWordIndex < 0) dictWordIndex = 0;
+  if (dictWordIndex >= static_cast<int>(dictWords.size())) {
+    dictWordIndex = static_cast<int>(dictWords.size()) - 1;
+  }
+  const DictWord& w = dictWords[dictWordIndex];
+  const int fontId = SETTINGS.getReaderFontId();
+  // Black box, then re-draw the word in white inside it.
+  renderer.fillRect(w.x - 1, w.y, w.w + 2, w.h, true);
+  renderer.drawText(fontId, w.x, w.y, w.text.c_str(), /*black=*/false, w.style);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
+void EpubReaderActivity::dictMoveHorizontal(int direction) {
+  if (dictWords.empty()) return;
+  int newIdx = dictWordIndex + direction;
+  if (newIdx < 0) newIdx = 0;
+  if (newIdx >= static_cast<int>(dictWords.size())) {
+    newIdx = static_cast<int>(dictWords.size()) - 1;
+  }
+  if (newIdx == dictWordIndex) return;
+  const DictWord& oldW = dictWords[dictWordIndex];
+  const int fontId = SETTINGS.getReaderFontId();
+  // Erase old highlight: white rect, then word back in black.
+  renderer.fillRect(oldW.x - 1, oldW.y, oldW.w + 2, oldW.h, false);
+  renderer.drawText(fontId, oldW.x, oldW.y, oldW.text.c_str(), true, oldW.style);
+  dictWordIndex = newIdx;
+  dictDrawHighlight();
+}
+
+void EpubReaderActivity::dictMoveVertical(int direction) {
+  if (dictWords.empty()) return;
+  const int curLineY = dictWords[dictWordIndex].lineY;
+  int newIdx = -1;
+  if (direction > 0) {
+    for (size_t i = dictWordIndex + 1; i < dictWords.size(); ++i) {
+      if (dictWords[i].lineY > curLineY) { newIdx = static_cast<int>(i); break; }
+    }
+  } else {
+    for (int i = dictWordIndex - 1; i >= 0; --i) {
+      if (dictWords[i].lineY < curLineY) {
+        const int targetLineY = dictWords[i].lineY;
+        newIdx = i;
+        while (newIdx > 0 && dictWords[newIdx - 1].lineY == targetLineY) newIdx--;
+        break;
+      }
+    }
+  }
+  if (newIdx < 0 || newIdx == dictWordIndex) return;
+  const DictWord& oldW = dictWords[dictWordIndex];
+  const int fontId = SETTINGS.getReaderFontId();
+  renderer.fillRect(oldW.x - 1, oldW.y, oldW.w + 2, oldW.h, false);
+  renderer.drawText(fontId, oldW.x, oldW.y, oldW.text.c_str(), true, oldW.style);
+  dictWordIndex = newIdx;
+  dictDrawHighlight();
+}
+
+void EpubReaderActivity::dictDoLookup() {
+  if (dictWords.empty()) return;
+  std::string raw = dictWords[dictWordIndex].text;
+  std::string clean;
+  for (char c : raw) {
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '\'') {
+      clean += c;
+    }
+  }
+  if (!dict.isLoaded() && !dict.load()) {
+    startActivityForResult(
+        std::make_unique<DictPopupActivity>(
+            renderer, mappedInput, clean.empty() ? raw : clean,
+            "Dictionary not found.\n\nCopy pages.idx, words.idx and defs.bin to /shortbread/dict/ on the SD card."),
+        [this](const ActivityResult&) { requestUpdate(); });
+    return;
+  }
+  std::string def = dict.lookup(clean);
+  if (def.empty()) def = "No definition found.";
+  startActivityForResult(
+      std::make_unique<DictPopupActivity>(renderer, mappedInput, clean.empty() ? raw : clean, std::move(def)),
+      [this](const ActivityResult&) { requestUpdate(); });
+}
+
+void EpubReaderActivity::enterDictMode() {
+  if (dictMode) return;
+  dictMode = true;
+  dictWords.clear();
+  dictWordIndex = 0;
+  requestUpdate();
+}
+
+void EpubReaderActivity::exitDictMode() {
+  if (!dictMode) return;
+  dictMode = false;
+  dictWords.clear();
+  dictWordIndex = 0;
+  requestUpdate();
 }
 
 void EpubReaderActivity::renderStatusBar() const {
