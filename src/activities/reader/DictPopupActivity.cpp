@@ -94,9 +94,17 @@ void DictPopupActivity::render(RenderLock&&) {
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
 
-  // Box sized to ~70% of the shorter screen dimension, height bounded but
-  // expands to fit content up to a cap.
-  const int boxW = static_cast<int>(screenW * 0.72f);
+  // Popup spans almost the full screen width and exactly half the screen
+  // height, in the half opposite the selected word so the word stays visible.
+  const int outerMargin = 10;
+  const int boxW = screenW - 2 * outerMargin;
+  const int boxX = outerMargin;
+  const int halfH = screenH / 2;
+  const int boxH = halfH - outerMargin;
+  const bool wordInTopHalf = wordY < halfH;
+  const int boxY = wordInTopHalf ? (screenH - boxH - outerMargin) : outerMargin;
+
+  const int innerX = boxX + PADDING;
   const int innerW = boxW - 2 * PADDING;
   if (lines.empty()) {
     wrapDefinition(innerW);
@@ -104,15 +112,6 @@ void DictPopupActivity::render(RenderLock&&) {
 
   const int titleH = renderer.getLineHeight(TITLE_FONT) + 6;
   const int bodyLH = renderer.getLineHeight(BODY_FONT);
-  const int maxBoxH = static_cast<int>(screenH * 0.55f);
-  const int desiredBodyH = static_cast<int>(lines.size()) * bodyLH;
-  int boxH = titleH + 2 * PADDING + desiredBodyH;
-  if (boxH > maxBoxH) boxH = maxBoxH;
-  if (boxH < titleH + 2 * PADDING + bodyLH) boxH = titleH + 2 * PADDING + bodyLH;
-
-  const int boxX = (screenW - boxW) / 2;
-  const int boxY = (screenH - boxH) / 2;
-  const int innerX = boxX + PADDING;
 
   // White fill + double black border so it sits cleanly on top of book text.
   renderer.fillRect(boxX, boxY, boxW, boxH, false);

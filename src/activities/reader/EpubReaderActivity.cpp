@@ -959,7 +959,8 @@ void EpubReaderActivity::dictDoLookup() {
     startActivityForResult(
         std::make_unique<DictPopupActivity>(
             renderer, mappedInput, clean.empty() ? raw : clean,
-            "Dictionary not found.\n\nCopy pages.idx, words.idx and defs.bin to /shortbread/dict/ on the SD card."),
+            "Dictionary not found.\n\nCopy pages.idx, words.idx and defs.bin to /shortbread/dict/ on the SD card.",
+            dictWords[dictWordIndex].y),
         [this](const ActivityResult&) { requestUpdate(); });
     return;
   }
@@ -976,8 +977,9 @@ void EpubReaderActivity::dictDoLookup() {
     constexpr size_t kCount = sizeof(kMisses) / sizeof(kMisses[0]);
     def = kMisses[static_cast<size_t>(millis()) % kCount];
   }
+  const int wordY = dictWords[dictWordIndex].y;
   startActivityForResult(
-      std::make_unique<DictPopupActivity>(renderer, mappedInput, clean.empty() ? raw : clean, std::move(def)),
+      std::make_unique<DictPopupActivity>(renderer, mappedInput, clean.empty() ? raw : clean, std::move(def), wordY),
       [this](const ActivityResult&) { requestUpdate(); });
 }
 
