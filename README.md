@@ -64,25 +64,47 @@ pio run -j 16
 
 Data is stored under `/shortbread/` on the MicroSD card (FAT32).
 
-## Dictionary (optional)
+## Dictionary
 
-In a book, the **Power** button enters dictionary mode — a highlight you move with the arrows. **Confirm** looks up the selected word. **Back** exits.
+![dictionary popup in reader](./docs/images/dictionary.jpg)
 
-Lookup uses WordNet 3.1 stored on the SD card. Build the three files once on a desktop:
+shortbread ships with an offline dictionary that runs entirely on-device. Tap **Power** inside any book to enter dictionary mode and look up a word.
+
+### Controls
+
+| Button | In a book | In dictionary mode |
+|--------|-----------|---------------------|
+| **Power** | Enter dictionary mode | Exit dictionary mode |
+| **Up / Down** | Page turn / scroll | Move highlight to adjacent line |
+| **Left / Right** | Page turn | Move highlight word by word |
+| **Confirm** | Open reader menu | Look up the highlighted word |
+| **Back** | Go home | Close popup, then exit dictionary mode |
+
+The popup sits directly under (or above) the highlighted word so the word itself stays visible. The body font + size match the book you're reading.
+
+### One-time setup
+
+The lookup data lives on the SD card under `/shortbread/dict/`. To build the files (uses WordNet 3.1, ~150K headwords with senses, synonyms and examples):
 
 ```bash
 python3 scripts/build_dict.py --out dict_out
 ```
 
-Copy the output into `/shortbread/dict/` on the SD card (~12MB):
+Then copy the three output files onto the SD card:
 
 ```
-/shortbread/dict/pages.idx
-/shortbread/dict/words.idx
-/shortbread/dict/defs.bin
+/shortbread/dict/pages.idx     ~10  KB  (RAM-loaded page table)
+/shortbread/dict/words.idx     ~3   MB  (sorted word index)
+/shortbread/dict/defs.bin      ~15  MB  (compressed definitions)
 ```
 
-If the files are missing, dict mode still works — the popup just shows a setup hint.
+Total ~18 MB. After the initial copy you never touch this again.
+
+If the files are missing, dictionary mode still works — the popup just shows a setup hint and a (mildly funny) "word not found" message when the lookup can't reach a definition.
+
+### How it works
+
+Lookup is a single 4 KB page read from `words.idx` (binary-searched against the in-RAM `pages.idx` table), followed by one variable-length read from `defs.bin` and a raw-DEFLATE decompress via `uzlib`. Round-trip is in the 10–20 ms range — fast enough to feel instant.
 
 ## Credits
 
