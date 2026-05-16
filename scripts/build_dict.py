@@ -67,8 +67,25 @@ def fetch_wordnet(cache_dir: Path) -> Path:
     return extracted
 
 
-def parse_data_file(path: Path) -> list[tuple[str, str, str]]:
-    """Return list of (word_lowercase, pos_label, gloss)."""
+def format_gloss(raw: str) -> str:
+    """Clean up a WordNet gloss line. Keep definition + examples, normalize
+    quote chars and whitespace."""
+    parts = [p.strip() for p in raw.split(";") if p.strip()]
+    if not parts:
+        return ""
+    out = [parts[0]]
+    for ex in parts[1:]:
+        if ex.startswith('"') and ex.endswith('"'):
+            ex = ex.strip('"').strip()
+            if ex:
+                out.append(f'"{ex}"')
+        else:
+            out.append(ex)
+    return " — ".join(out)
+
+
+def parse_data_file(path: Path) -> list[tuple[str, str, str, list[str]]]:
+    """Return list of (word_lowercase, pos_label, gloss, synonyms)."""
     out = []
     with path.open(encoding="utf-8") as f:
         for line in f:
@@ -94,36 +111,40 @@ def parse_data_file(path: Path) -> list[tuple[str, str, str]]:
                 w = w.split("(")[0].strip()
                 if w:
                     words.append(w)
-            gloss = gloss.strip()
-            if ";" in gloss:
-                gloss = gloss.split(";")[0].strip()
+            gloss_clean = format_gloss(gloss)
             label = POS_LABEL.get(ss_type, "")
             for w in words:
-                out.append((w, label, gloss))
+                synonyms = [s for s in words if s != w]
+                out.append((w, label, gloss_clean, synonyms))
     return out
 
 
 def build_entries(dict_dir: Path) -> dict[str, str]:
     """word -> combined gloss text."""
-    senses: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    senses: dict[str, list[tuple[str, str, list[str]]]] = defaultdict(list)
     for fn in DATA_FILES:
         path = dict_dir / fn
         if not path.exists():
             print(f"warning: {path} not found, skipping", file=sys.stderr)
             continue
-        for word, label, gloss in parse_data_file(path):
-            senses[word].append((label, gloss))
+        for word, label, gloss, synonyms in parse_data_file(path):
+            senses[word].append((label, gloss, synonyms))
     result: dict[str, str] = {}
     for word, sense_list in senses.items():
         seen: set[tuple[str, str]] = set()
         lines: list[str] = []
-        for label, gloss in sense_list:
+        for label, gloss, synonyms in sense_list:
             key = (label, gloss)
             if key in seen:
                 continue
             seen.add(key)
             prefix = f"{label} " if label else ""
-            lines.append(f"{prefix}{gloss}")
+            body = gloss
+            if synonyms:
+                # Keep at most 6 synonyms per sense to limit size.
+                syn = ", ".join(synonyms[:6])
+                body = f"{body}  [syn: {syn}]"
+            lines.append(f"{prefix}{body}")
         result[word] = "\n".join(lines[:8])  # cap senses per word
     return result
 

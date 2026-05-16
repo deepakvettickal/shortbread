@@ -5,14 +5,16 @@
 #include <algorithm>
 #include <cstring>
 
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "fontIds.h"
 
 namespace {
 constexpr int PADDING = 10;
-constexpr int BODY_FONT = SMALL_FONT_ID;
-constexpr const char* BULLET = "\xe2\x80\xa2 ";  // "• "
-constexpr int SENSE_GAP = 4;
+constexpr const char* BULLET = "\xe2\x80\xa2";   // "•"
+constexpr int BULLET_GAP = 6;                    // gap after bullet
+constexpr int POS_GAP = 6;                       // gap after POS label
+constexpr int SENSE_GAP = 6;
 constexpr int OUTER_MARGIN_X_PCT = 5;
 constexpr int MIN_GAP_TO_WORD = 6;
 
@@ -21,10 +23,10 @@ struct PosMap {
   const char* expanded;
 };
 constexpr PosMap kPosTable[] = {
-    {"n. ", "n: "},
-    {"v. ", "v: "},
-    {"adj. ", "adj: "},
-    {"adv. ", "adv: "},
+    {"n. ", "n:"},
+    {"v. ", "v:"},
+    {"adj. ", "adj:"},
+    {"adv. ", "adv:"},
 };
 }  // namespace
 
@@ -66,6 +68,7 @@ std::vector<std::string> DictPopupActivity::wrapText(const std::string& text, Gf
 }
 
 void DictPopupActivity::buildSenses(int maxWidth) {
+  const int fontId = SETTINGS.getReaderFontId();
   senses.clear();
   // Split definition by '\n'.
   std::vector<std::string> raw;
@@ -80,7 +83,7 @@ void DictPopupActivity::buildSenses(int maxWidth) {
   }
   if (!cur.empty()) raw.push_back(cur);
 
-  const int bulletW = renderer.getTextWidth(BODY_FONT, BULLET);
+  const int bulletW = renderer.getTextWidth(fontId, BULLET) + BULLET_GAP;
   for (const auto& line : raw) {
     if (line.empty()) continue;
     Sense s;
@@ -93,16 +96,16 @@ void DictPopupActivity::buildSenses(int maxWidth) {
         break;
       }
     }
-    const int posW =
-        s.pos.empty() ? 0 : renderer.getTextWidth(BODY_FONT, s.pos.c_str(), EpdFontFamily::ITALIC);
+    const int posW = s.pos.empty()
+                         ? 0
+                         : renderer.getTextWidth(fontId, s.pos.c_str(), EpdFontFamily::ITALIC) + POS_GAP;
     const int firstW = maxWidth - bulletW - posW;
     const int contW = maxWidth - bulletW;
     if (firstW < 40 || contW < 40) {
-      // Pathological narrow width — degrade by skipping POS prefix.
       s.pos.clear();
-      s.bodyLines = wrapText(body, renderer, BODY_FONT, maxWidth - bulletW, maxWidth - bulletW);
+      s.bodyLines = wrapText(body, renderer, fontId, maxWidth - bulletW, maxWidth - bulletW);
     } else {
-      s.bodyLines = wrapText(body, renderer, BODY_FONT, firstW, contW);
+      s.bodyLines = wrapText(body, renderer, fontId, firstW, contW);
     }
     if (s.bodyLines.empty()) s.bodyLines.push_back("");
     senses.push_back(std::move(s));
@@ -134,6 +137,7 @@ void DictPopupActivity::loop() {
 }
 
 void DictPopupActivity::render(RenderLock&&) {
+  const int fontId = SETTINGS.getReaderFontId();
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
 
@@ -145,8 +149,8 @@ void DictPopupActivity::render(RenderLock&&) {
 
   if (!sensesBuilt) buildSenses(innerW);
 
-  const int bodyLH = renderer.getLineHeight(BODY_FONT);
-  const int bulletW = renderer.getTextWidth(BODY_FONT, BULLET);
+  const int bodyLH = renderer.getLineHeight(fontId);
+  const int bulletW = renderer.getTextWidth(fontId, BULLET) + BULLET_GAP;
 
   // Flatten render rows: each row = (sense_idx, line_idx_within_sense). Lets
   // us measure exact desired height and scroll line-by-line.
@@ -209,17 +213,15 @@ void DictPopupActivity::render(RenderLock&&) {
     }
     lastSenseIdx = static_cast<int>(r.senseIdx);
     if (r.lineIdx == 0) {
-      // Bullet + italic POS + first body line.
-      renderer.drawText(BODY_FONT, innerX, y, BULLET, true);
+      renderer.drawText(fontId, innerX, y, BULLET, true);
       int xPos = innerX + bulletW;
       if (!s.pos.empty()) {
-        renderer.drawText(BODY_FONT, xPos, y, s.pos.c_str(), true, EpdFontFamily::ITALIC);
-        xPos += renderer.getTextWidth(BODY_FONT, s.pos.c_str(), EpdFontFamily::ITALIC);
+        renderer.drawText(fontId, xPos, y, s.pos.c_str(), true, EpdFontFamily::ITALIC);
+        xPos += renderer.getTextWidth(fontId, s.pos.c_str(), EpdFontFamily::ITALIC) + POS_GAP;
       }
-      renderer.drawText(BODY_FONT, xPos, y, s.bodyLines[0].c_str());
+      renderer.drawText(fontId, xPos, y, s.bodyLines[0].c_str());
     } else {
-      // Continuation indent past bullet.
-      renderer.drawText(BODY_FONT, innerX + bulletW, y, s.bodyLines[r.lineIdx].c_str());
+      renderer.drawText(fontId, innerX + bulletW, y, s.bodyLines[r.lineIdx].c_str());
     }
     y += bodyLH;
   }
@@ -227,8 +229,8 @@ void DictPopupActivity::render(RenderLock&&) {
   if (maxScroll > 0) {
     char hint[24];
     snprintf(hint, sizeof(hint), "%d/%d", scrollLine + 1, maxScroll + 1);
-    const int tw = renderer.getTextWidth(BODY_FONT, hint);
-    renderer.drawText(BODY_FONT, boxX + boxW - PADDING - tw,
+    const int tw = renderer.getTextWidth(fontId, hint);
+    renderer.drawText(fontId, boxX + boxW - PADDING - tw,
                       boxY + boxH - PADDING - bodyLH + 2, hint);
   }
 
