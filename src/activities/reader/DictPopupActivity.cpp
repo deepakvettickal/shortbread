@@ -190,10 +190,10 @@ void DictPopupActivity::render(RenderLock&&) {
     if (boxY < MIN_GAP_TO_WORD) boxY = MIN_GAP_TO_WORD;
   }
 
-  // White fill + double black border.
+  // White fill + double black border with a small gap between the lines.
   renderer.fillRect(boxX, boxY, boxW, boxH, false);
   renderer.drawRect(boxX, boxY, boxW, boxH);
-  renderer.drawRect(boxX + 1, boxY + 1, boxW - 2, boxH - 2);
+  renderer.drawRect(boxX + 3, boxY + 3, boxW - 6, boxH - 6);
 
   const int bodyTop = boxY + PADDING;
   const int bodyBottom = boxY + boxH - PADDING;
