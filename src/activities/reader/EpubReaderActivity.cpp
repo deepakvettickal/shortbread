@@ -141,8 +141,9 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  // Enter dictionary mode on Power button press while reading.
-  if (mappedInput.wasReleased(MappedInputManager::Button::Power)) {
+  // Enter dictionary mode on Power button release while reading.
+  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::DICTIONARY &&
+      mappedInput.wasReleased(MappedInputManager::Button::Power)) {
     enterDictMode();
     return;
   }
@@ -963,7 +964,18 @@ void EpubReaderActivity::dictDoLookup() {
     return;
   }
   std::string def = dict.lookup(clean);
-  if (def.empty()) def = "No definition found.";
+  if (def.empty()) {
+    static const char* kMisses[] = {
+        "Word not found.\n\nEither it's not in WordNet, or it's a very lonely word.",
+        "Not in the book.\n\nMaybe a typo? Or a name? Or a vibe?",
+        "WordNet draws a blank.\n\nDictionary is finite. Language isn't.",
+        "Hmm. Never heard of that one.\n\nTry a different word.",
+        "Lexical void detected.\n\nThis word is off the map.",
+        "Searched every page. Nothing.\n\nProper nouns and slang live elsewhere.",
+    };
+    constexpr size_t kCount = sizeof(kMisses) / sizeof(kMisses[0]);
+    def = kMisses[static_cast<size_t>(millis()) % kCount];
+  }
   startActivityForResult(
       std::make_unique<DictPopupActivity>(renderer, mappedInput, clean.empty() ? raw : clean, std::move(def)),
       [this](const ActivityResult&) { requestUpdate(); });

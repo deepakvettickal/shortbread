@@ -258,6 +258,28 @@ void setup() {
     return;
   }
 
+  // One-shot migration: if a /biscuit/ folder still exists from before the
+  // shortbread rename, move its contents into /shortbread/ and delete it.
+  // Conflicts (entry already exists in /shortbread/) are skipped silently.
+  if (Storage.exists("/biscuit")) {
+    LOG_DBG("MAIN", "Migrating /biscuit -> /shortbread");
+    Storage.mkdir("/shortbread");
+    auto entries = Storage.listFiles("/biscuit", 500);
+    int moved = 0;
+    int skipped = 0;
+    for (const auto& name : entries) {
+      std::string src = std::string("/biscuit/") + name.c_str();
+      std::string dst = std::string("/shortbread/") + name.c_str();
+      if (Storage.exists(dst.c_str())) {
+        skipped++;
+        continue;
+      }
+      if (Storage.rename(src.c_str(), dst.c_str())) moved++;
+    }
+    Storage.rmdir("/biscuit");  // succeeds only if fully emptied
+    LOG_DBG("MAIN", "Migration: %d moved, %d skipped", moved, skipped);
+  }
+
   HalSystem::checkPanic();
   HalSystem::clearPanic();  // TODO: move this to an activity when we have one to display the panic info
 
