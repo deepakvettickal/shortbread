@@ -8,22 +8,31 @@
 // Modal popup showing a dictionary definition for a single word.
 // Renders inside a centered box; Back / Confirm dismiss.
 class DictPopupActivity final : public Activity {
-  std::string headword;
+  struct Sense {
+    std::string pos;                    // "noun: " / "verb: " / "" — rendered italic
+    std::vector<std::string> bodyLines; // line 0 sits right after pos, rest indent under bullet
+  };
+
   std::string definition;
-  std::vector<std::string> lines;
-  int wordY = 0;  // y of the highlighted word; popup sits in the opposite half
+  std::vector<Sense> senses;
+  int wordY = 0;
+  int wordH = 0;
   int scrollLine = 0;
   bool needsRender = true;
+  bool sensesBuilt = false;
 
-  void wrapDefinition(int maxWidth);
+  void buildSenses(int maxWidth);
+  static std::vector<std::string> wrapText(const std::string& text, GfxRenderer& renderer, int fontId,
+                                           int firstLineMaxWidth, int continuationMaxWidth);
 
  public:
   explicit DictPopupActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                             std::string headwordIn, std::string definitionIn, int wordYIn)
+                             std::string /*unused headword*/, std::string definitionIn,
+                             int wordYIn, int wordHIn)
       : Activity("DictPopup", renderer, mappedInput),
-        headword(std::move(headwordIn)),
         definition(std::move(definitionIn)),
-        wordY(wordYIn) {}
+        wordY(wordYIn),
+        wordH(wordHIn) {}
 
   void onEnter() override;
   void loop() override;
