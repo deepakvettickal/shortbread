@@ -64,6 +64,26 @@ pio run -j 16
 
 Data is stored under `/shortbread/` on the MicroSD card (FAT32).
 
+## Dictionary (optional)
+
+In a book, the **Power** button enters dictionary mode — a highlight you move with the arrows. **Confirm** looks up the selected word. **Back** exits.
+
+Lookup uses WordNet 3.1 stored on the SD card. Build the three files once on a desktop:
+
+```bash
+python3 scripts/build_dict.py --out dict_out
+```
+
+Copy the output into `/shortbread/dict/` on the SD card (~12MB):
+
+```
+/shortbread/dict/pages.idx
+/shortbread/dict/words.idx
+/shortbread/dict/defs.bin
+```
+
+If the files are missing, dict mode still works — the popup just shows a setup hint.
+
 ## Credits
 
 Built on top of:
