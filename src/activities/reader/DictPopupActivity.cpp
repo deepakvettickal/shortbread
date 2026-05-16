@@ -21,10 +21,10 @@ struct PosMap {
   const char* expanded;
 };
 constexpr PosMap kPosTable[] = {
-    {"n. ", "noun: "},
-    {"v. ", "verb: "},
-    {"adj. ", "adjective: "},
-    {"adv. ", "adverb: "},
+    {"n. ", "n: "},
+    {"v. ", "v: "},
+    {"adj. ", "adj: "},
+    {"adv. ", "adv: "},
 };
 }  // namespace
 
