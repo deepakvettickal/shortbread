@@ -38,27 +38,52 @@ Five tiles on the home screen:
 
 ## Installing
 
-No releases yet — manual install only.
+### Easy install — online flasher (no toolchain)
 
-### Prerequisites
+The simplest way to flash, straight from your browser. shortbread is built on
+[crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader), so
+its web flasher works for us too — your device already has a compatible
+bootloader and partition layout.
 
-- [PlatformIO](https://platformio.org/) (CLI or VS Code extension)
-- Python 3.8+
-- USB-C data cable
+You'll need a Chromium-based browser (Chrome/Edge — they support Web Serial)
+and a USB-C data cable.
 
-### Flash
+1. Download `shortbread-merged.bin` (a single image: bootloader + partition
+   table + app, flashable at offset `0x0`).
+2. Connect the device via USB-C and wake/unlock it.
+3. Go to **<https://crosspointreader.com/#flash-tools>**, select **X4** as the
+   device, and choose the **custom firmware** option to upload
+   `shortbread-merged.bin`.
+4. Click flash and wait for it to finish.
+
+### Easy install — single .bin via esptool
+
+Prefer the command line? You only need [esptool](https://github.com/espressif/esptool)
+(`pip install esptool`) and a USB-C cable:
+
+```bash
+esptool --chip esp32c3 write-flash 0x0 shortbread-merged.bin
+```
+
+### Build from source
+
+Requires [PlatformIO](https://platformio.org/) (CLI or VS Code extension),
+Python 3.10+, and a USB-C data cable.
 
 ```bash
 git clone --recursive https://github.com/deepakvettickal/shortbread
 cd shortbread
-pio run --target upload
+pio run --target upload     # build + flash over USB
 ```
 
-### Build only
+Build only (no upload):
 
 ```bash
 pio run -j 16
 ```
+
+Every build also writes a ready-to-distribute merged image to
+`.pio/build/default/firmware-merged.bin` (the `shortbread-merged.bin` above).
 
 ## SD card
 
