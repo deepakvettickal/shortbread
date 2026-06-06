@@ -1,5 +1,7 @@
 #include "AppsMenuActivity.h"
 
+#include <algorithm>
+
 #include <I18n.h>
 
 #include <Bitmap.h>
@@ -47,25 +49,77 @@
 #include <HalStorage.h>
 
 
-void AppsMenuActivity::loadRecentBooks() {
-  recentBooks.clear();
-  memset(progressStr, 0, sizeof(progressStr));
+void AppsMenuActivity::scanBooks() {
+  books.clear();
+
+  // Most-recently-read books first (so the bottom preview defaults to "continue reading"),
+  // then every other EPUB/XTC on the SD root in alphabetical order.
+  std::vector<std::string> seen;
   for (const auto& b : RECENT_BOOKS.getBooks()) {
-    if ((int)recentBooks.size() >= MAX_RECENT) break;
     if (!Storage.exists(b.path.c_str())) continue;
+    CarouselBook cb;
+    cb.path = b.path;
+    cb.title = b.title;
+    cb.author = b.author;
+    cb.coverBmpPath = b.coverBmpPath;
+    cb.metaLoaded = !b.title.empty();  // recent store already has title/cover
+    books.push_back(std::move(cb));
+    seen.push_back(b.path);
+  }
 
-    int idx = (int)recentBooks.size();
-    recentBooks.push_back(b);
-
-    // Read progress.bin cheaply without loading the epub
-    std::string cachePath;
-    if (FsHelpers::hasEpubExtension(b.path)) {
-      cachePath = Epub(b.path, "/.crosspoint").getCachePath();
-    } else if (FsHelpers::hasXtcExtension(b.path)) {
-      cachePath = Xtc(b.path, "/.crosspoint").getCachePath();
+  std::vector<std::string> others;
+  auto root = Storage.open("/");
+  if (root && root.isDirectory()) {
+    root.rewindDirectory();
+    char name[512];
+    for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
+      const bool isDir = file.isDirectory();
+      file.getName(name, sizeof(name));
+      file.close();
+      if (isDir || name[0] == '.') continue;
+      std::string_view fn{name};
+      if (!FsHelpers::hasEpubExtension(fn) && !FsHelpers::hasXtcExtension(fn)) continue;
+      std::string full = std::string("/") + name;
+      if (std::find(seen.begin(), seen.end(), full) != seen.end()) continue;
+      others.push_back(std::move(full));
     }
-    if (cachePath.empty()) continue;
+  }
+  if (root) root.close();
+  std::sort(others.begin(), others.end());
+  for (auto& p : others) {
+    CarouselBook cb;
+    cb.path = std::move(p);
+    books.push_back(std::move(cb));
+  }
+}
 
+void AppsMenuActivity::ensureMeta(int i) {
+  if (i < 0 || i >= (int)books.size()) return;
+  CarouselBook& b = books[i];
+  if (b.metaLoaded) return;
+  b.metaLoaded = true;
+
+  std::string cachePath;
+  if (FsHelpers::hasEpubExtension(b.path)) {
+    Epub epub(b.path, "/.crosspoint");
+    if (epub.load(true, true)) {  // build cache if missing so title/cover are available
+      b.title = epub.getTitle();
+      b.author = epub.getAuthor();
+      b.coverBmpPath = epub.getCoverBmpPath();
+    }
+    cachePath = epub.getCachePath();
+  } else if (FsHelpers::hasXtcExtension(b.path)) {
+    Xtc xtc(b.path, "/.crosspoint");
+    if (xtc.load()) {
+      b.title = xtc.getTitle();
+      b.author = xtc.getAuthor();
+      b.coverBmpPath = xtc.getCoverBmpPath();
+    }
+    cachePath = xtc.getCachePath();
+  }
+
+  // Reading progress, read straight from progress.bin (no full book load)
+  if (!cachePath.empty()) {
     std::string progressPath = cachePath + "/progress.bin";
     FsFile f;
     if (Storage.openFileForRead("APM", progressPath, f)) {
@@ -74,103 +128,121 @@ void AppsMenuActivity::loadRecentBooks() {
       f.close();
       if (n >= 4) {
         int spineIndex = data[0] + (data[1] << 8);
-        int curPage    = data[2] + (data[3] << 8);
-        int pageCount  = (n >= 6) ? data[4] + (data[5] << 8) : 0;
-        if (pageCount > 0) {
-          snprintf(progressStr[idx], sizeof(progressStr[idx]),
-                   "Ch.%d p.%d/%d", spineIndex + 1, curPage + 1, pageCount);
-        } else {
-          snprintf(progressStr[idx], sizeof(progressStr[idx]),
-                   "Ch.%d p.%d", spineIndex + 1, curPage + 1);
-        }
+        int curPage = data[2] + (data[3] << 8);
+        int pageCount = (n >= 6) ? data[4] + (data[5] << 8) : 0;
+        if (pageCount > 0)
+          snprintf(b.progress, sizeof(b.progress), "Ch.%d p.%d/%d", spineIndex + 1, curPage + 1, pageCount);
+        else
+          snprintf(b.progress, sizeof(b.progress), "Ch.%d p.%d", spineIndex + 1, curPage + 1);
       }
     }
   }
 }
 
-void AppsMenuActivity::loadCovers() {
-  for (RecentBook& book : recentBooks) {
-    if (book.coverBmpPath.empty()) continue;
-    std::string thumbPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverThumbH);
-    if (Storage.exists(thumbPath.c_str())) continue;
+bool AppsMenuActivity::ensureCover(int i) {
+  if (i < 0 || i >= (int)books.size()) return false;
+  ensureMeta(i);
+  CarouselBook& b = books[i];
+  if (b.coverBmpPath.empty() || coverThumbH <= 0) return false;
+  std::string thumbPath = UITheme::getCoverThumbPath(b.coverBmpPath, coverThumbH);
+  if (Storage.exists(thumbPath.c_str())) return false;  // already generated
 
-    if (FsHelpers::hasEpubExtension(book.path)) {
-      Epub epub(book.path, "/.crosspoint");
-      epub.load(false, true);
-      if (!epub.generateThumbBmp(coverThumbH)) book.coverBmpPath = "";
-    } else if (FsHelpers::hasXtcExtension(book.path)) {
-      Xtc xtc(book.path, "/.crosspoint");
-      if (xtc.load()) {
-        if (!xtc.generateThumbBmp(coverThumbH)) book.coverBmpPath = "";
-      }
-    }
+  if (FsHelpers::hasEpubExtension(b.path)) {
+    Epub epub(b.path, "/.crosspoint");
+    epub.load(false, true);
+    if (!epub.generateThumbBmp(coverThumbH)) { b.coverBmpPath = ""; return false; }
+  } else if (FsHelpers::hasXtcExtension(b.path)) {
+    Xtc xtc(b.path, "/.crosspoint");
+    if (xtc.load() && !xtc.generateThumbBmp(coverThumbH)) { b.coverBmpPath = ""; return false; }
   }
-  coversLoaded = true;
-  coversLoading = false;
-  requestUpdate();
+  return true;
+}
+
+void AppsMenuActivity::ensureWindow(int center) {
+  bool generated = false;
+  for (int i = center - 1; i <= center + 1; i++) {
+    if (i < 0 || i >= (int)books.size()) continue;
+    ensureMeta(i);
+    if (ensureCover(i)) generated = true;
+  }
+  if (generated) requestUpdate();  // covers appeared — redraw with art
 }
 
 void AppsMenuActivity::onEnter() {
   Activity::onEnter();
   selectorIndex = 0;
-  coversLoaded = false;
-  coversLoading = false;
+  carouselMode = false;
   firstRenderDone = false;
   refreshSystemInfo();
   loadLastUsed();
-  loadRecentBooks();
+  scanBooks();
+  // Keep the last-selected book in range (the library may have changed)
+  if (carouselIndex >= (int)books.size()) carouselIndex = 0;
   requestUpdate();
 }
 
 void AppsMenuActivity::loop() {
-  const int recentCount = (int)recentBooks.size();
+  const int bookCount = (int)books.size();
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-    if (!isRecentSelected()) {
-      int col = getTileCol() + 1;
-      int row = getTileRow();
-      if (col >= COLS) { col = 0; row = (row + 1) % TILE_ROWS; }
-      selectorIndex = row * COLS + col;
+  // === Full-screen carousel: Left/Right browse, Confirm opens, Up exits. Down/Back ignored. ===
+  if (carouselMode) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+      if (carouselIndex > 0) { carouselIndex--; requestUpdate(); }
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+      if (carouselIndex < bookCount - 1) { carouselIndex++; requestUpdate(); }
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+      carouselMode = false;
       requestUpdate();
     }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      if (carouselIndex < bookCount) {
+        activityManager.goToReader(books[carouselIndex].path);
+        return;
+      }
+    }
+    return;  // carousel owns all input
+  }
+
+  // === Tile grid navigation (2×2) ===
+  if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+    int col = getTileCol() + 1;
+    int row = getTileRow();
+    if (col >= COLS) { col = 0; row = (row + 1) % TILE_ROWS; }
+    selectorIndex = row * COLS + col;
+    requestUpdate();
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-    if (!isRecentSelected()) {
-      int col = getTileCol() - 1;
-      int row = getTileRow();
-      if (col < 0) { col = COLS - 1; row = (row - 1 + TILE_ROWS) % TILE_ROWS; }
-      selectorIndex = row * COLS + col;
+    int col = getTileCol() - 1;
+    int row = getTileRow();
+    if (col < 0) { col = COLS - 1; row = (row - 1 + TILE_ROWS) % TILE_ROWS; }
+    selectorIndex = row * COLS + col;
+    requestUpdate();
+  }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+    int row = getTileRow() + 1;
+    if (row >= TILE_ROWS) {
+      // Past the bottom tile row → open the full-screen book carousel
+      if (bookCount > 0) {
+        if (carouselIndex >= bookCount) carouselIndex = 0;
+        carouselMode = true;
+        requestUpdate();
+      }
+    } else {
+      selectorIndex = row * COLS + getTileCol();
       requestUpdate();
     }
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-    if (isRecentSelected()) {
-      int next = recentIdx() + 1;
-      selectorIndex = (next >= recentCount) ? 0 : ITEM_COUNT + next;
-    } else {
-      int row = getTileRow() + 1;
-      if (row >= TILE_ROWS)
-        selectorIndex = recentCount > 0 ? ITEM_COUNT : 0;
-      else
-        selectorIndex = row * COLS + getTileCol();
-    }
-    requestUpdate();
-  }
-
   if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
-    if (isRecentSelected()) {
-      int prev = recentIdx() - 1;
-      selectorIndex = (prev < 0) ? ITEM_COUNT - 1 : ITEM_COUNT + prev;
-    } else {
-      int row = getTileRow() - 1;
-      if (row < 0)
-        selectorIndex = recentCount > 0 ? ITEM_COUNT + recentCount - 1 : ITEM_COUNT - 1;
-      else
-        selectorIndex = row * COLS + getTileCol();
+    int row = getTileRow() - 1;
+    if (row >= 0) {
+      selectorIndex = row * COLS + getTileCol();
+      requestUpdate();
     }
-    requestUpdate();
   }
 
   // Periodic info refresh — only redraw if visible values changed
@@ -185,12 +257,8 @@ void AppsMenuActivity::loop() {
     }
   }
 
-  // === CONFIRM: open recent book or category ===
+  // === CONFIRM: open category ===
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (isRecentSelected() && recentIdx() < (int)recentBooks.size()) {
-      activityManager.goToReader(recentBooks[recentIdx()].path);
-      return;
-    }
     std::unique_ptr<Activity> app;
     switch (selectorIndex) {
         case 0: {
@@ -251,11 +319,24 @@ void AppsMenuActivity::render(RenderLock&&) {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
 
+  constexpr int sidePad = 14;
+  // Cover thumbnails are generated tall enough that even a full-width cover only downscales
+  // (drawBitmap never upscales). The same thumb is reused for the bottom preview and the carousel.
+  coverThumbH = ((pageWidth - sidePad * 2) * 3) / 2 + 50;
+
+  if (carouselMode) {
+    drawCarousel();
+    renderer.displayBuffer();
+    // Lazily generate metadata + covers for the visible window after painting, so the
+    // first frame appears immediately and only redraws once art is ready.
+    ensureWindow(carouselIndex);
+    return;
+  }
+
   drawStatusBar();
 
   constexpr int statusBarH = 40;
   constexpr int buttonHintsH = 40;
-  constexpr int sidePad = 14;
   constexpr int tileGap = 6;
   constexpr int gridTop = statusBarH + 8;
   const int pageBottom = pageHeight - buttonHintsH - 4;
@@ -278,16 +359,9 @@ void AppsMenuActivity::render(RenderLock&&) {
   const int divY = gridTop + tileSectionH + 6;
   renderer.drawLine(sidePad, divY, pageWidth - sidePad, divY, true);
 
-  // Bottom section — recent books
+  // Bottom section — last-read book preview (Down expands into the full-screen carousel)
   const int recentsTop = divY + 8;
   const int recentsH = pageBottom - recentsTop;
-  const int headerH = renderer.getLineHeight(SMALL_FONT_ID) + 4;
-  const int booksH = recentsH - headerH;
-  const int bookH = (recentBooks.empty()) ? booksH : booksH / (int)recentBooks.size();
-  // Generate tall enough that cover width > tile width (drawBitmap only downscales).
-  // tileW = pageWidth - sidePad*2. For a 2:3 portrait cover: coverW = thumbH * 2/3.
-  // Need coverW > tileW → thumbH > tileW * 3/2.
-  coverThumbH = ((pageWidth - sidePad * 2) * 3) / 2 + 50;
   drawRecentBooks(sidePad, recentsTop, pageWidth - sidePad * 2, recentsH);
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "<", ">");
@@ -296,22 +370,69 @@ void AppsMenuActivity::render(RenderLock&&) {
 
   renderer.displayBuffer();
 
-  if (!firstRenderDone) {
-    firstRenderDone = true;
-    requestUpdate();
-  } else if (!coversLoaded && !coversLoading && !recentBooks.empty()) {
-    coversLoading = true;
-    loadCovers();
+  // The bottom preview only needs the one last-selected book; load its meta+cover lazily.
+  if (carouselIndex < (int)books.size()) {
+    ensureMeta(carouselIndex);
+    if (ensureCover(carouselIndex)) requestUpdate();
   }
 }
 
+bool AppsMenuActivity::drawCoverScaled(const CarouselBook& book, int x, int y, int boxW, int boxH,
+                                      uint8_t opacity, bool cropFill) const {
+  if (opacity == CrossPointSettings::COVER_OFF || book.coverBmpPath.empty() || coverThumbH <= 0)
+    return false;
+
+  std::string thumbPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverThumbH);
+  FsFile coverFile;
+  if (!Storage.openFileForRead("APM", thumbPath, coverFile)) return false;
+
+  Bitmap bitmap(coverFile);
+  if (bitmap.parseHeaders() != BmpReaderError::Ok) {
+    coverFile.close();
+    return false;
+  }
+
+  float cropY = 0.0f;
+  if (cropFill) {
+    const int bmpW = bitmap.getWidth();
+    const int bmpH = bitmap.getHeight();
+    if (bmpW > 0 && bmpH > 0) {
+      const float widthScale = (float)boxW / (float)bmpW;
+      const float scaledH = bmpH * widthScale;
+      if (scaledH > boxH) cropY = 1.0f - ((float)boxH / scaledH);
+    }
+  }
+  renderer.drawBitmap(bitmap, x, y, boxW, boxH, 0.0f, cropY);
+  coverFile.close();
+
+  // Fade overlay — clamped to the screen so off-screen "peek" slivers stay safe.
+  if (opacity == CrossPointSettings::COVER_LIGHT || opacity == CrossPointSettings::COVER_MEDIUM) {
+    const int x0 = std::max(0, x);
+    const int y0 = std::max(0, y);
+    const int x1 = std::min(renderer.getScreenWidth(), x + boxW);
+    const int y1 = std::min(renderer.getScreenHeight(), y + boxH);
+    for (int fy = y0; fy < y1; fy++)
+      for (int fx = x0; fx < x1; fx++) {
+        const bool keep = (opacity == CrossPointSettings::COVER_LIGHT) ? (fx % 2 == 0 && fy % 2 == 0)
+                                                                       : ((fx + fy) % 2 == 0);
+        if (!keep) renderer.drawPixel(fx, fy, false);
+      }
+  }
+  return true;
+}
+
 void AppsMenuActivity::drawRecentBooks(int x, int y, int w, int h) const {
-  // Section header
-  renderer.drawText(SMALL_FONT_ID, x, y, "RECENT", true, EpdFontFamily::BOLD);
+  // Section header + a small "browse" cue (Down expands into the carousel)
+  renderer.drawText(SMALL_FONT_ID, x, y, "CONTINUE READING", true, EpdFontFamily::BOLD);
+  if (!books.empty()) {
+    const char* hint = "v browse";
+    const int hintW = renderer.getTextWidth(SMALL_FONT_ID, hint);
+    renderer.drawText(SMALL_FONT_ID, x + w - hintW, y, hint);
+  }
   const int headerH = renderer.getLineHeight(SMALL_FONT_ID) + 4;
 
-  if (recentBooks.empty()) {
-    renderer.drawText(SMALL_FONT_ID, x, y + headerH + 4, "No recent books");
+  if (books.empty()) {
+    renderer.drawText(SMALL_FONT_ID, x, y + headerH + 4, "No books on SD card");
     return;
   }
 
@@ -321,49 +442,14 @@ void AppsMenuActivity::drawRecentBooks(int x, int y, int w, int h) const {
   const int authorLineH = renderer.getLineHeight(SMALL_FONT_ID);
   constexpr int pad = 8;
 
-  // Which book to display — selected recent when navigating recents, else book 0
-  const int showIdx = (isRecentSelected() && recentIdx() < (int)recentBooks.size())
-                      ? recentIdx() : 0;
-  const RecentBook& shown = recentBooks[showIdx];
+  // Preview shows the last-selected book (whatever was last centered in the carousel)
+  const int showIdx = (carouselIndex < (int)books.size()) ? carouselIndex : 0;
+  const CarouselBook& shown = books[showIdx];
 
-  // Full-section border (selected = inverted, otherwise plain rect)
-  const bool recSel = isRecentSelected();
-  if (recSel) renderer.fillRect(x, booksTop, w, booksH, true);
-  else        renderer.drawRect(x, booksTop, w, booksH, true);
+  renderer.drawRect(x, booksTop, w, booksH, true);
 
-  // Cover fills the entire section
-  const uint8_t opacity = SETTINGS.coverOpacity;
-  if (coversLoaded && opacity != CrossPointSettings::COVER_OFF &&
-      !shown.coverBmpPath.empty() && coverThumbH > 0 && !recSel) {
-    std::string thumbPath = UITheme::getCoverThumbPath(shown.coverBmpPath, coverThumbH);
-    FsFile coverFile;
-    if (Storage.openFileForRead("APM", thumbPath, coverFile)) {
-      Bitmap bitmap(coverFile);
-      if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-        int bmpW = bitmap.getWidth();
-        int bmpH = bitmap.getHeight();
-        float cropY = 0.0f;
-        if (bmpW > 0 && bmpH > 0) {
-          float widthScale = (float)(w - 2) / (float)bmpW;
-          float scaledH = bmpH * widthScale;
-          if (scaledH > booksH - 2) cropY = 1.0f - ((float)(booksH - 2) / scaledH);
-        }
-        renderer.drawBitmap(bitmap, x + 1, booksTop + 1, w - 2, booksH - 2, 0.0f, cropY);
-        if (opacity == CrossPointSettings::COVER_LIGHT) {
-          for (int fy = booksTop + 1; fy < booksTop + booksH - 1; fy++)
-            for (int fx = x + 1; fx < x + w - 1; fx++)
-              if (!(fx % 2 == 0 && fy % 2 == 0))
-                renderer.drawPixel(fx, fy, false);
-        } else if (opacity == CrossPointSettings::COVER_MEDIUM) {
-          for (int fy = booksTop + 1; fy < booksTop + booksH - 1; fy++)
-            for (int fx = x + 1; fx < x + w - 1; fx++)
-              if ((fx + fy) % 2 != 0)
-                renderer.drawPixel(fx, fy, false);
-        }
-      }
-      coverFile.close();
-    }
-  }
+  // Cover fills the section
+  drawCoverScaled(shown, x + 1, booksTop + 1, w - 2, booksH - 2, SETTINGS.coverOpacity, true);
 
   // Book info — pinned to bottom of section
   const int infoH = titleLineH + authorLineH + 6;
@@ -375,25 +461,113 @@ void AppsMenuActivity::drawRecentBooks(int x, int y, int w, int h) const {
     displayTitle.resize(displayTitle.size() - 4);
   if (displayTitle.size() < title.size()) displayTitle += "...";
 
-  renderer.drawText(UI_10_FONT_ID, x + pad, infoY, displayTitle.c_str(), !recSel, EpdFontFamily::BOLD);
+  renderer.drawText(UI_10_FONT_ID, x + pad, infoY, displayTitle.c_str(), true, EpdFontFamily::BOLD);
 
   if (!shown.author.empty())
-    renderer.drawText(SMALL_FONT_ID, x + pad, infoY + titleLineH + 2, shown.author.c_str(), !recSel);
+    renderer.drawText(SMALL_FONT_ID, x + pad, infoY + titleLineH + 2, shown.author.c_str(), true);
 
-  if (progressStr[showIdx][0] != '\0') {
-    int pW = renderer.getTextWidth(SMALL_FONT_ID, progressStr[showIdx]);
-    renderer.drawText(SMALL_FONT_ID, x + w - pad - pW, infoY + titleLineH + 2,
-                      progressStr[showIdx], !recSel);
+  if (shown.progress[0] != '\0') {
+    int pW = renderer.getTextWidth(SMALL_FONT_ID, shown.progress);
+    renderer.drawText(SMALL_FONT_ID, x + w - pad - pW, infoY + titleLineH + 2, shown.progress, true);
   }
 
-  // Book index indicator (e.g. "2 / 3") top-right
-  if ((int)recentBooks.size() > 1) {
-    char idxStr[8];
-    snprintf(idxStr, sizeof(idxStr), "%d / %d", showIdx + 1, (int)recentBooks.size());
+  // Book index indicator (e.g. "2 / 12") top-right
+  if ((int)books.size() > 1) {
+    char idxStr[12];
+    snprintf(idxStr, sizeof(idxStr), "%d / %d", showIdx + 1, (int)books.size());
     int idxW = renderer.getTextWidth(SMALL_FONT_ID, idxStr);
-    renderer.drawText(SMALL_FONT_ID, x + w - pad - idxW, booksTop + pad, idxStr, !recSel);
+    renderer.drawText(SMALL_FONT_ID, x + w - pad - idxW, booksTop + pad, idxStr, true);
+  }
+}
+
+void AppsMenuActivity::drawCarousel() const {
+  const int W = renderer.getScreenWidth();
+  const int H = renderer.getScreenHeight();
+
+  drawStatusBar();
+
+  constexpr int statusBarH = 40;
+  constexpr int buttonHintsH = 40;
+  const int top = statusBarH + 10;
+  const int bottom = H - buttonHintsH - 4;
+
+  const int bookCount = (int)books.size();
+  if (bookCount == 0 || carouselIndex >= bookCount) {
+    renderer.drawCenteredText(UI_12_FONT_ID, (top + bottom) / 2, "No books on SD card", true);
+    GUI.drawSideButtonHints(renderer, "^ home", "");
+    return;
   }
 
+  const CarouselBook& book = books[carouselIndex];
+
+  // Reserve space below the cover for title / author / progress
+  const int titleLineH = renderer.getLineHeight(UI_12_FONT_ID);
+  const int authorLineH = renderer.getLineHeight(SMALL_FONT_ID);
+  const int infoH = titleLineH + authorLineH + 14;
+
+  // Centered cover, as large as possible while leaving an edge gap for the adjacent-book peeks.
+  // Width is the usual binding constraint on a portrait screen, so push it to the peek margins.
+  constexpr int peek = 26;
+  const int maxCoverW = W - 2 * peek - 12;
+  int coverW = maxCoverW;
+  int coverH = coverW * 3 / 2;
+  const int maxCoverH = (bottom - top) - infoH;
+  if (coverH > maxCoverH) {
+    coverH = maxCoverH;
+    coverW = coverH * 2 / 3;
+  }
+  const int coverX = (W - coverW) / 2;
+  const int coverY = top + ((bottom - top - infoH) - coverH) / 2;
+
+  // Adjacent books peeking in from the screen edges (same scale, clipped by the screen)
+  if (carouselIndex > 0)
+    drawCoverScaled(books[carouselIndex - 1], peek - coverW, coverY, coverW, coverH,
+                    CrossPointSettings::COVER_FULL, false);
+  if (carouselIndex < bookCount - 1)
+    drawCoverScaled(books[carouselIndex + 1], W - peek, coverY, coverW, coverH,
+                    CrossPointSettings::COVER_FULL, false);
+
+  // Center cover (full opacity) with a border frame
+  renderer.drawRect(coverX - 2, coverY - 2, coverW + 4, coverH + 4, true);
+  const bool drew =
+      drawCoverScaled(book, coverX, coverY, coverW, coverH, CrossPointSettings::COVER_FULL, true);
+  if (!drew) {
+    // No cover available — show the title centered inside the frame as a fallback
+    renderer.fillRect(coverX, coverY, coverW, coverH, false);
+    renderer.drawRect(coverX, coverY, coverW, coverH, true);
+    const std::string& t = book.title.empty() ? book.path : book.title;
+    renderer.drawCenteredText(UI_10_FONT_ID, coverY + coverH / 2, t.c_str(), true);
+  }
+
+  // Title / author / progress, centered below the cover
+  int infoY = coverY + coverH + 8;
+  const std::string& title = book.title.empty() ? book.path : book.title;
+  std::string displayTitle = title;
+  const int maxW = W - 40;
+  while (displayTitle.size() > 4 && renderer.getTextWidth(UI_12_FONT_ID, displayTitle.c_str()) > maxW)
+    displayTitle.resize(displayTitle.size() - 4);
+  if (displayTitle.size() < title.size()) displayTitle += "...";
+  renderer.drawCenteredText(UI_12_FONT_ID, infoY, displayTitle.c_str(), true, EpdFontFamily::BOLD);
+
+  int below = infoY + titleLineH + 2;
+  if (!book.author.empty()) {
+    renderer.drawCenteredText(SMALL_FONT_ID, below, book.author.c_str(), true);
+    below += authorLineH + 2;
+  }
+  if (book.progress[0] != '\0')
+    renderer.drawCenteredText(SMALL_FONT_ID, below, book.progress, true);
+
+  // Position indicator "2 / 12" just under the status bar
+  if (bookCount > 1) {
+    char idxStr[12];
+    snprintf(idxStr, sizeof(idxStr), "%d / %d", carouselIndex + 1, bookCount);
+    renderer.drawCenteredText(SMALL_FONT_ID, top - 2, idxStr, true);
+  }
+
+  // Button hints: Up = home, Left/Right = browse, Confirm = open
+  const auto labels = mappedInput.mapLabels("", tr(STR_SELECT), "<", ">");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  GUI.drawSideButtonHints(renderer, "^ home", "");
 }
 
 void AppsMenuActivity::refreshSystemInfo() {

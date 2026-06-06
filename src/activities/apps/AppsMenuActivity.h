@@ -22,25 +22,34 @@ class AppsMenuActivity final : public Activity {
   static constexpr int ITEM_COUNT = 4;
   static constexpr int COLS = 2;
   static constexpr int TILE_ROWS = 2;
-  static constexpr int MAX_RECENT = 3;
 
   // Grid navigation helpers (tile zone only)
   int getTileRow() const { return selectorIndex / COLS; }
   int getTileCol() const { return selectorIndex % COLS; }
-  bool isRecentSelected() const { return selectorIndex >= ITEM_COUNT; }
-  int recentIdx() const { return selectorIndex - ITEM_COUNT; }
 
-  // Recent books (loaded on enter, up to MAX_RECENT)
-  std::vector<RecentBook> recentBooks;
-  char progressStr[MAX_RECENT][20] = {};
-  void loadRecentBooks();
+  // Full-screen book carousel (entered with Down from the bottom tile row)
+  bool carouselMode = false;
+  int carouselIndex = 0;  // last-selected book; persists across enter/exit of the carousel
 
-  // Cover thumbnail loading (async, after first render)
-  bool coversLoaded = false;
-  bool coversLoading = false;
+  // The carousel shows every book on the SD card. Path list is built cheaply on enter;
+  // per-book metadata (title/author/cover/progress) and cover thumbnails are generated
+  // lazily for the currently visible window only, so a large library stays responsive.
+  struct CarouselBook {
+    std::string path;
+    std::string title;
+    std::string author;
+    std::string coverBmpPath;
+    char progress[24] = {};
+    bool metaLoaded = false;
+  };
+  std::vector<CarouselBook> books;
+  void scanBooks();        // enumerate SD-root books, most-recently-read first
+  void ensureMeta(int i);  // lazy: title/author/cover path + progress for one book
+  bool ensureCover(int i);  // lazy: generate the cover thumb; returns true if newly generated
+  void ensureWindow(int center);  // meta+cover for center-1..center+1; requests redraw if covers grew
+
   bool firstRenderDone = false;
   int coverThumbH = 0;
-  void loadCovers();
 
   // Cached system info (refreshed on enter + periodically)
   uint32_t freeHeap = 0;
@@ -62,4 +71,10 @@ class AppsMenuActivity final : public Activity {
   void drawTile(int index, int x, int y, int w, int h, bool selected) const;
   void drawStatusBar() const;
   void drawRecentBooks(int x, int y, int w, int h) const;
+  void drawCarousel() const;
+  // Draws a book cover thumbnail scaled into the given box. When cropFill is true the cover
+  // fills the box width and is top-cropped; otherwise it is fitted (used for edge "peek" slivers
+  // that rely on screen clipping). Returns false if no cover could be drawn.
+  bool drawCoverScaled(const CarouselBook& book, int x, int y, int boxW, int boxH, uint8_t opacity,
+                       bool cropFill) const;
 };
