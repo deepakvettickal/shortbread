@@ -18,7 +18,8 @@
 Import("env")  # noqa: F821 — provided by PlatformIO's SCons environment
 
 APP_BIN = "$BUILD_DIR/${PROGNAME}.bin"
-MERGED_BIN = "$BUILD_DIR/${PROGNAME}-merged.bin"
+# Friendly, distributable name — this is what the README and releases reference.
+MERGED_BIN = "$BUILD_DIR/shortbread-merged.bin"
 board = env.BoardConfig()
 
 
