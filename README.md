@@ -48,19 +48,22 @@ bootloader and partition layout.
 You'll need a Chromium-based browser (Chrome/Edge — they support Web Serial)
 and a USB-C data cable.
 
-1. Download **`shortbread-merged.bin`** from the
+1. Download **`firmware.bin`** from the
    [latest release](https://github.com/deepakvettickal/shortbread/releases/latest)
-   (under **Assets**). It's a single image — bootloader + partition table +
-   app — flashable at offset `0x0`.
+   (under **Assets**).
 2. Connect the device via USB-C and wake/unlock it.
 3. Go to **<https://crosspointreader.com/#flash-tools>**, select **X4** as the
-   device, and choose the **custom firmware** option to upload
-   `shortbread-merged.bin`.
+   device, and choose the **custom firmware** option to upload `firmware.bin`.
 4. Click flash and wait for it to finish.
+
+> The web flasher expects the **app image** (`firmware.bin`) and reuses the
+> device's existing bootloader and partition table. Use the merged image below
+> only with esptool.
 
 ### Easy install — single .bin via esptool
 
-Prefer the command line? Download `shortbread-merged.bin` from the
+Prefer the command line? This flashes everything (bootloader + partition table
++ app) in one shot. Download **`shortbread-merged.bin`** from the
 [latest release](https://github.com/deepakvettickal/shortbread/releases/latest),
 then — with [esptool](https://github.com/espressif/esptool)
 (`pip install esptool`) and a USB-C cable:
